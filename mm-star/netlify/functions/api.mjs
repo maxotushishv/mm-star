@@ -16,8 +16,7 @@ if (!admin.apps.length) {
   });
 }
 const db = admin.firestore();
-const bucket = admin.storage().bucket();
-const jwtSecret = new TextEncoder().encode(env.APP_JWT_SECRET || 'change-me');
+const jwtSecret = new TextEncoder().encode(env.APP_JWT_SECRET || 'mm-star-temporary-change-this-in-netlify');
 
 const json = (statusCode, body, headers={}) => ({statusCode, headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store',...headers}, body: JSON.stringify(body)});
 const bad = (m, code=400) => json(code,{ok:false,error:m});
@@ -47,14 +46,24 @@ async function ubillSend(phone,text,otp=false){
   const r=await fetch(`${env.UBILL_API_URL||'https://api.ubill.dev'}/v1/sms/send`,{method:'POST',headers:{key:env.UBILL_API_KEY,'content-type':'application/json'},body:JSON.stringify({brandID:Number(env.UBILL_BRAND_ID||1),numbers:[cleanPhone(phone)],text,stopList:false,otp})});
   const data=await r.json().catch(()=>({})); if(!r.ok||Number(data.statusID)!==0) throw new Error(data.message||'UBILL_SEND_FAILED'); return data;
 }
-function rsaPublicEncrypt(text,pem){return crypto.publicEncrypt({key:pem,padding:crypto.constants.RSA_PKCS1_OAEP_PADDING,oaepHash:'sha256'},Buffer.from(text)).toString('base64')}
-function rsaPrivateDecrypt(b64,pem){return crypto.privateDecrypt({key:pem,padding:crypto.constants.RSA_PKCS1_OAEP_PADDING,oaepHash:'sha256'},Buffer.from(b64,'base64')).toString()}
+function keepzPublicKey(raw){
+  const key=String(raw||'').replace(/\\n/g,'\n').trim();
+  if(key.includes('BEGIN PUBLIC KEY')) return key;
+  return crypto.createPublicKey({key:Buffer.from(key,'base64'),format:'der',type:'spki'});
+}
+function keepzPrivateKey(raw){
+  const key=String(raw||'').replace(/\\n/g,'\n').trim();
+  if(key.includes('BEGIN PRIVATE KEY')||key.includes('BEGIN RSA PRIVATE KEY')) return key;
+  return crypto.createPrivateKey({key:Buffer.from(key,'base64'),format:'der',type:'pkcs8'});
+}
+function rsaPublicEncrypt(text,key){return crypto.publicEncrypt({key:keepzPublicKey(key),padding:crypto.constants.RSA_PKCS1_OAEP_PADDING,oaepHash:'sha256'},Buffer.from(text)).toString('base64')}
+function rsaPrivateDecrypt(b64,key){return crypto.privateDecrypt({key:keepzPrivateKey(key),padding:crypto.constants.RSA_PKCS1_OAEP_PADDING,oaepHash:'sha256'},Buffer.from(b64,'base64')).toString()}
 function aesEncrypt(payload){ const key=crypto.randomBytes(32), iv=crypto.randomBytes(16), c=crypto.createCipheriv('aes-256-cbc',key,iv); const encrypted=Buffer.concat([c.update(JSON.stringify(payload),'utf8'),c.final()]).toString('base64'); return {encrypted,key,iv}; }
 function aesDecrypt(b64,key,iv){const d=crypto.createDecipheriv('aes-256-cbc',key,iv); return JSON.parse(Buffer.concat([d.update(Buffer.from(b64,'base64')),d.final()]).toString('utf8'));}
-function keepzEncrypt(payload){ if(!env.KEEPZ_PUBLIC_KEY) throw new Error('KEEPZ_PUBLIC_KEY_MISSING'); const {encrypted,key,iv}=aesEncrypt(payload); const joined=`${key.toString('base64')}.${iv.toString('base64')}`; return {identifier:env.KEEPZ_IDENTIFIER,encryptedData:encrypted,encryptedKeys:rsaPublicEncrypt(joined,env.KEEPZ_PUBLIC_KEY.replace(/\\n/g,'\n')),aes:true}; }
-function keepzDecrypt(resp){ if(!resp?.encryptedData) return resp; const joined=rsaPrivateDecrypt(resp.encryptedKeys,env.KEEPZ_PRIVATE_KEY.replace(/\\n/g,'\n')); const [k,v]=joined.split('.'); return aesDecrypt(resp.encryptedData,Buffer.from(k,'base64'),Buffer.from(v,'base64')); }
+function keepzEncrypt(payload){ if(!env.KEEPZ_PUBLIC_KEY) throw new Error('KEEPZ_PUBLIC_KEY_MISSING'); const {encrypted,key,iv}=aesEncrypt(payload); const joined=`${key.toString('base64')}.${iv.toString('base64')}`; return {identifier:env.KEEPZ_IDENTIFIER||env.KEEPZ_INTEGRATOR_ID,encryptedData:encrypted,encryptedKeys:rsaPublicEncrypt(joined,env.KEEPZ_PUBLIC_KEY),aes:true}; }
+function keepzDecrypt(resp){ if(!resp?.encryptedData) return resp; const joined=rsaPrivateDecrypt(resp.encryptedKeys,env.KEEPZ_PRIVATE_KEY); const [k,v]=joined.split('.'); return aesDecrypt(resp.encryptedData,Buffer.from(k,'base64'),Buffer.from(v,'base64')); }
 async function keepzCreate(order){
-  for(const k of ['KEEPZ_IDENTIFIER','KEEPZ_INTEGRATOR_ID','KEEPZ_RECEIVER_ID','KEEPZ_PUBLIC_KEY','KEEPZ_PRIVATE_KEY']) if(!env[k]) throw new Error(`${k}_MISSING`);
+  for(const k of ['KEEPZ_INTEGRATOR_ID','KEEPZ_RECEIVER_ID','KEEPZ_PUBLIC_KEY','KEEPZ_PRIVATE_KEY']) if(!env[k]) throw new Error(`${k}_MISSING`);
   const payload={amount:Number(order.total),receiverId:env.KEEPZ_RECEIVER_ID,receiverType:'BRANCH',integratorId:env.KEEPZ_INTEGRATOR_ID,integratorOrderId:order.keepzOrderId,currency:'GEL',language:'KA',callbackUri:`${env.PUBLIC_SITE_URL}/api/keepz-callback`,successRedirectUri:`${env.PUBLIC_SITE_URL}/?payment=success`,failRedirectUri:`${env.PUBLIC_SITE_URL}/?payment=failed`};
   const r=await fetch(`${env.KEEPZ_BASE_URL||'https://gateway.keepz.me'}/api/integrator/order`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(keepzEncrypt(payload))});
   const raw=await r.json().catch(()=>({})); if(!r.ok) throw new Error('KEEPZ_HTTP_'+r.status); return keepzDecrypt(raw);
@@ -116,8 +125,42 @@ async function handler(event){
     if(path==='dealer/catalog'&&method==='GET'){const a=await roleAuth(event,['dealer']);const ds=await db.collection('dealers').doc(a.sub).get(), d=ds.data();const q=await db.collection('products').where('active','==',true).get();const products=q.docs.map(productPublic).filter(p=>(d.categories||[]).length===0||(d.categories||[]).includes(p.categoryId));return ok({products:products.map(p=>({...p,price:p.dealerPrice,retailPrice:p.price,dealerPrice:p.dealerPrice,difference:Number(p.price)-Number(p.dealerPrice)})),dealer:{name:d.name}});}
     if(path==='dealer/orders'&&method==='GET'){const a=await roleAuth(event,['dealer']);const q=await db.collection('dealerOrders').where('dealerId','==',a.sub).orderBy('createdAt','desc').get();return ok({orders:q.docs.map(productPublic)});}
     if(path==='dealer/orders'&&method==='POST'){const a=await roleAuth(event,['dealer']),b=bodyOf(event),dealer=(await db.collection('dealers').doc(a.sub).get()).data();if(!b.items?.length)return bad('EMPTY_CART');let total=0;const items=[];for(const it of b.items){const s=await db.collection('products').doc(it.id).get(),p=s.data();if(!p||!p.active) return bad('PRODUCT_NOT_AVAILABLE');if((dealer.categories||[]).length&&!(dealer.categories||[]).includes(p.categoryId)) return bad('CATEGORY_NOT_ALLOWED');const qty=Math.max(1,Number(it.qty)||1);if(Number(p.stock)<qty)return bad('OUT_OF_STOCK');const price=Number(p.dealerPrice);total+=price*qty;items.push({productId:s.id,code:p.code||'',name:p.name,qty,price,total:price*qty});}const invoice=await nextInvoice('dealer'),ref=db.collection('dealerOrders').doc();await db.runTransaction(async tx=>{for(const i of items){const pr=db.collection('products').doc(i.productId),s=await tx.get(pr);if(Number(s.data().stock)<i.qty)throw new Error('OUT_OF_STOCK');tx.update(pr,{stock:admin.firestore.FieldValue.increment(-i.qty),sales:admin.firestore.FieldValue.increment(i.qty)});}tx.set(ref,{invoice,dealerId:a.sub,dealer:{name:dealer.name,companyType:dealer.companyType,taxId:dealer.taxId,address:dealer.address,phone:dealer.phone},items,total,paymentMethod:b.paymentMethod||'invoice',status:'ახალი',createdAt:admin.firestore.FieldValue.serverTimestamp()});});return ok({id:ref.id,invoice,total});}
-    if(path==='admin/integrations'&&method==='GET'){await roleAuth(event,['admin']);return ok({integrations:{ubill:{configured:!!env.UBILL_API_KEY,brandId:env.UBILL_BRAND_ID||'1'},keepz:{configured:!!(env.KEEPZ_IDENTIFIER&&env.KEEPZ_PUBLIC_KEY&&env.KEEPZ_PRIVATE_KEY),receiverId:env.KEEPZ_RECEIVER_ID||''},onway:{configured:!!(env.ONWAY_API_KEY&&env.ONWAY_SECRET),apiUrl:env.ONWAY_API_URL||''}}});}
+    if(path==='admin/integrations'&&method==='GET'){await roleAuth(event,['admin']);return ok({integrations:{ubill:{configured:!!env.UBILL_API_KEY,brandId:env.UBILL_BRAND_ID||'1'},keepz:{configured:!!(env.KEEPZ_INTEGRATOR_ID&&env.KEEPZ_RECEIVER_ID&&env.KEEPZ_PUBLIC_KEY&&env.KEEPZ_PRIVATE_KEY),receiverId:env.KEEPZ_RECEIVER_ID||''},onway:{configured:!!(env.ONWAY_API_KEY&&env.ONWAY_SECRET),apiUrl:env.ONWAY_API_URL||''}}});}
     return bad('NOT_FOUND',404);
   } catch(e){console.error(e); const m=e?.message||'SERVER_ERROR'; if(m==='AUTH_REQUIRED')return bad(m,401); if(m==='FORBIDDEN')return bad(m,403); return bad(m,500);}
 }
-export { handler };
+export default async (request, context) => {
+  const url = new URL(request.url);
+  const headers = Object.fromEntries(request.headers.entries());
+  let body = '';
+  if (!['GET','HEAD'].includes(request.method)) {
+    body = await request.text();
+  }
+
+  const event = {
+    path: url.pathname,
+    rawUrl: request.url,
+    httpMethod: request.method,
+    headers,
+    queryStringParameters: Object.fromEntries(url.searchParams.entries()),
+    body
+  };
+
+  const result = await handler(event);
+
+  if (result instanceof Response) return result;
+
+  const responseHeaders = new Headers(result.headers || {});
+  if (result.isBase64Encoded) {
+    const bytes = Uint8Array.from(Buffer.from(result.body || '', 'base64'));
+    return new Response(bytes, {
+      status: result.statusCode || 200,
+      headers: responseHeaders
+    });
+  }
+
+  return new Response(result.body ?? '', {
+    status: result.statusCode || 200,
+    headers: responseHeaders
+  });
+};
