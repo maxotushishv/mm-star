@@ -1,8 +1,174 @@
-<!doctype html><html lang="ka"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MM STAR Admin</title><style>
-:root{--r:#e61928;--k:#111}*{box-sizing:border-box}body{margin:0;font-family:Arial,Helvetica,sans-serif;background:#f6f6f7;color:#171717}.top{background:#111;color:white;padding:12px 4vw;display:flex;align-items:center;gap:14px}.logo{width:95px;height:46px;object-fit:contain;background:#fff;border-radius:10px}.wrap{max-width:1200px;margin:auto;padding:24px 4vw}.card{background:#fff;border:1px solid #e7e7e7;border-radius:16px;padding:18px;box-shadow:0 6px 20px #0001}.form{display:grid;gap:10px;max-width:420px}.form input,.form textarea,.form select{padding:11px;border:1px solid #ddd;border-radius:10px}.btn{border:0;border-radius:10px;padding:10px 14px;cursor:pointer;background:#111;color:#fff}.red{background:var(--r)}.tabs{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}.table{width:100%;border-collapse:collapse;background:#fff}.table th,.table td{padding:10px;border-bottom:1px solid #eee;text-align:left}.muted{color:#777}.lang{margin-left:auto;display:flex;gap:6px}.lang button{border:0;border-radius:999px;padding:8px 10px;cursor:pointer}.hidden{display:none}.toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:#111;color:#fff;padding:10px 16px;border-radius:10px;display:none}
-</style></head><body><header class="top"><img src="assets/logo.jpg" class="logo"><strong>MM STAR Admin</strong><div class="lang"><button onclick="setLang('ka')">🇬🇪</button><button onclick="setLang('tr')">🇹🇷</button></div><button class="btn" onclick="location.href='index.html'">Store</button></header><main class="wrap"><section id="login" class="card"><h2>Admin Login</h2><div class="form"><input id="u" placeholder="Username"><input id="p" type="password" placeholder="Password"><button class="btn red" onclick="login()">შესვლა</button></div></section><section id="app" class="hidden"><div class="tabs"><button class="btn red" onclick="dashboard()">Dashboard</button><button class="btn" onclick="products()">პროდუქტები</button><button class="btn" onclick="categories()">კატეგორიები</button><button class="btn" onclick="orders(false)">შეკვეთები</button><button class="btn" onclick="orders(true)">დილერის შეკვეთები</button><button class="btn" onclick="dealers()">დილერები</button><button class="btn" onclick="integrations()">ინტეგრაციები</button><button class="btn" onclick="logout()">გასვლა</button></div><div id="panel"></div></section></main><div id="toast" class="toast"></div><script src="config.js"></script><script>
-const apiBase=window.MMSTAR_CONFIG.apiBase||'/api';let token=sessionStorage.adminToken||'';const ah=()=>({authorization:'Bearer '+token,'content-type':'application/json'});async function api(path,opt={}){const r=await fetch(apiBase+'/'+path,opt);const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||'ERROR');return d}function say(x){toast.textContent=x;toast.style.display='block';setTimeout(()=>toast.style.display='none',1800)}function setLang(v){localStorage.mmAdminLang=v;say(v==='tr'?'Dil değiştirildi':'ენა შეიცვალა')}async function login(){try{const d=await api('admin/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:document.getElementById('u').value.trim(),password:document.getElementById('p').value})});token=d.token;sessionStorage.adminToken=token;show();dashboard()}catch(e){say(e.message)}}function show(){
-  document.getElementById('login').classList.add('hidden');
-  document.getElementById('app').classList.remove('hidden');
-}function logout(){sessionStorage.removeItem('adminToken');location.reload()}async function dashboard(){const d=await api('admin/dashboard',{headers:ah()});panel.innerHTML='<div class="grid">'+Object.entries(d.stats).map(([k,v])=>`<div class="card"><div class="muted">${k}</div><h2>${v}</h2></div>`).join('')+'</div>'}async function products(){const d=await api('admin/products',{headers:ah()});panel.innerHTML=`<div class="card"><h2>პროდუქტები</h2><p class="muted">შემდეგ ეტაპზე აქ დავამატებთ კომპიუტერიდან Upload + ფოტო URL ორივეს.</p><table class="table"><tr><th>კოდი</th><th>პროდუქტი</th><th>ფასი</th><th>მარაგი</th></tr>${d.products.map(x=>`<tr><td>${x.code||''}</td><td>${x.name||''}</td><td>${x.price||0} ₾</td><td>${x.stock||0}</td></tr>`).join('')}</table></div>`}async function categories(){const d=await api('admin/categories',{headers:ah()});panel.innerHTML=`<div class="card"><h2>კატეგორიები</h2>${d.categories.map(x=>`<p>${x.emoji||''} ${x.name||''}</p>`).join('')}</div>`}async function orders(dealer){const d=await api(dealer?'admin/dealer-orders':'admin/orders',{headers:ah()});panel.innerHTML=`<div class="card"><h2>${dealer?'დილერის შეკვეთები':'შეკვეთები'}</h2><table class="table"><tr><th>Invoice</th><th>სტატუსი</th><th>ჯამი</th></tr>${d.orders.map(x=>`<tr><td>${x.invoice||''}</td><td>${x.status||''}</td><td>${x.total||0} ₾</td></tr>`).join('')}</table></div>`}async function dealers(){const d=await api('admin/dealers',{headers:ah()});panel.innerHTML=`<div class="card"><h2>დილერები</h2>${d.dealers.map(x=>`<p>${x.companyType||''} ${x.name||''} — ${x.phone||''}</p>`).join('')}</div>`}async function integrations(){const d=await api('admin/integrations',{headers:ah()});panel.innerHTML=`<div class="card"><h2>ინტეგრაციები</h2><pre>${JSON.stringify(d.integrations,null,2)}</pre></div>`}if(token){show();dashboard().catch(()=>logout())}
-</script></body></html>
+<!doctype html>
+<html lang="ka">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MM STAR Admin</title>
+<style>
+:root{--r:#e51b2b;--k:#111;--bg:#f5f6f8;--line:#e8e8eb;--muted:#72727a}
+*{box-sizing:border-box}body{margin:0;font-family:Inter,Arial,sans-serif;background:var(--bg);color:#17171a}
+button,input,textarea,select{font:inherit}.top{position:sticky;top:0;z-index:20;background:#111;color:#fff;padding:12px 4vw;display:flex;align-items:center;gap:14px;box-shadow:0 5px 18px #0003}
+.logo{width:86px;height:42px;object-fit:contain;background:#fff;border-radius:10px}.brand{font-weight:800}.lang{margin-left:auto;display:flex;gap:7px}
+.flag{width:38px;height:38px;border:1px solid #ffffff33;border-radius:50%;background:#1c1c1c;cursor:pointer;font-size:19px}.flag.active{outline:2px solid #fff}
+.wrap{max-width:1280px;margin:auto;padding:24px 4vw}.card{background:#fff;border:1px solid var(--line);border-radius:18px;padding:18px;box-shadow:0 8px 30px #0000000b}
+.login{max-width:430px;margin:7vh auto}.form{display:grid;gap:11px}.row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.row3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+input,textarea,select{width:100%;padding:11px 12px;border:1px solid #dcdce1;border-radius:11px;background:#fff}textarea{min-height:95px;resize:vertical}
+.btn{border:0;border-radius:11px;padding:10px 14px;cursor:pointer;background:#111;color:#fff;font-weight:700}.btn.red{background:var(--r)}.btn.light{background:#f1f1f3;color:#111}.btn.danger{background:#fff0f1;color:#c71625;border:1px solid #ffd2d6}.btn.small{padding:7px 10px;font-size:13px}
+.tabs{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 18px}.tabs .btn.active{background:var(--r)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}.stat h2{margin:8px 0 0}.muted{color:var(--muted)}
+.tablewrap{overflow:auto}.table{width:100%;border-collapse:collapse;min-width:760px}.table th,.table td{padding:11px 9px;border-bottom:1px solid #eee;text-align:left;vertical-align:middle}.table th{font-size:13px;color:#686870}
+.actions{display:flex;gap:6px;flex-wrap:wrap}.thumb{width:48px;height:48px;border-radius:10px;object-fit:cover;background:#f0f0f2}.badge{display:inline-block;padding:5px 8px;border-radius:999px;background:#f1f1f3;font-size:12px}
+.toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap}.modalback{position:fixed;inset:0;background:#0008;display:none;align-items:center;justify-content:center;padding:18px;z-index:50}
+.modal{width:min(720px,100%);max-height:90vh;overflow:auto;background:#fff;border-radius:18px;padding:18px}.modalhead{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#111;color:#fff;padding:11px 16px;border-radius:11px;display:none;z-index:100;max-width:90vw}
+.hidden{display:none!important}.sectiontitle{margin:0}.empty{padding:24px;text-align:center;color:#777}.switch{display:flex;align-items:center;gap:8px}
+@media(max-width:700px){.row,.row3{grid-template-columns:1fr}.wrap{padding:16px}.top{padding:10px 14px}.brand{font-size:14px}.table{min-width:650px}}
+</style>
+</head>
+<body>
+<header class="top">
+  <img src="assets/logo.jpg" class="logo" alt="MM STAR">
+  <div class="brand">MM STAR <span id="brandAdmin">Admin</span></div>
+  <div class="lang">
+    <button id="lang-ka" class="flag" onclick="setLang('ka')" title="ქართული">🇬🇪</button>
+    <button id="lang-tr" class="flag" onclick="setLang('tr')" title="Türkçe">🇹🇷</button>
+  </div>
+</header>
+
+<main class="wrap">
+<section id="loginBox" class="card login">
+  <h2 id="loginTitle">ადმინის შესვლა</h2>
+  <div class="form">
+    <input id="u" autocomplete="username" placeholder="მომხმარებელი">
+    <input id="p" type="password" autocomplete="current-password" placeholder="პაროლი">
+    <button id="loginBtn" class="btn red" onclick="doLogin()">შესვლა</button>
+  </div>
+</section>
+
+<section id="app" class="hidden">
+  <div id="tabs" class="tabs"></div>
+  <div id="panel"></div>
+</section>
+</main>
+
+<div id="modalBack" class="modalback" onclick="if(event.target===this)closeModal()">
+  <div class="modal">
+    <div class="modalhead"><h2 id="modalTitle"></h2><button class="btn light" onclick="closeModal()">✕</button></div>
+    <div id="modalBody"></div>
+  </div>
+</div>
+<div id="toast" class="toast"></div>
+
+<script src="config.js"></script>
+<script>
+const apiBase=(window.MMSTAR_CONFIG&&window.MMSTAR_CONFIG.apiBase)||'/api';
+let token=sessionStorage.getItem('adminToken')||'';
+let lang=localStorage.getItem('mmAdminLang')||'ka';
+let cache={products:[],categories:[],dealers:[],orders:[],dealerOrders:[],customers:[]};
+
+const T={
+ka:{
+admin:'ადმინი',login:'ადმინის შესვლა',username:'მომხმარებელი',password:'პაროლი',signin:'შესვლა',
+dashboard:'მთავარი',products:'პროდუქტები',categories:'კატეგორიები',orders:'შეკვეთები',dealerOrders:'დილერის შეკვეთები',dealers:'დილერები',customers:'მომხმარებლები',integrations:'ინტეგრაციები',logout:'გასვლა',
+addProduct:'პროდუქტის დამატება',editProduct:'პროდუქტის რედაქტირება',addCategory:'კატეგორიის დამატება',editCategory:'კატეგორიის რედაქტირება',addDealer:'დილერის დამატება',editDealer:'დილერის რედაქტირება',
+code:'კოდი',name:'დასახელება',description:'აღწერა',category:'კატეგორია',imageUrl:'ფოტოს URL',price:'საცალო ფასი',dealerPrice:'დილერის ფასი',stock:'მარაგი',active:'აქტიური',isNew:'ახალია',save:'შენახვა',cancel:'გაუქმება',edit:'რედაქტირება',delete:'წაშლა',
+emoji:'Emoji',companyType:'კომპანიის ტიპი',taxId:'საიდენტიფიკაციო კოდი',address:'მისამართი',phone:'ტელეფონი',email:'Email',dealerUsername:'Username',dealerPassword:'Password',allowedCategories:'დაშვებული კატეგორიები',
+invoice:'ინვოისი',status:'სტატუსი',total:'ჯამი',date:'თარიღი',actions:'მოქმედება',setStatus:'სტატუსის შეცვლა',confirmDelete:'ნამდვილად წავშალო?',saved:'შენახულია',deleted:'წაიშალა',languageChanged:'ენა შეიცვალა',
+noData:'მონაცემები ჯერ არ არის',photoUploadNote:'კომპიუტერიდან ფაილის ატვირთვა ჩაირთვება Firebase Storage-ის ჩართვის შემდეგ. ახლა ფოტო URL მუშაობს.',ordersCount:'შეკვეთები',totalSpent:'სულ შენაძენი'
+},
+tr:{
+admin:'Yönetici',login:'Yönetici Girişi',username:'Kullanıcı adı',password:'Şifre',signin:'Giriş',
+dashboard:'Panel',products:'Ürünler',categories:'Kategoriler',orders:'Siparişler',dealerOrders:'Bayi Siparişleri',dealers:'Bayiler',customers:'Müşteriler',integrations:'Entegrasyonlar',logout:'Çıkış',
+addProduct:'Ürün Ekle',editProduct:'Ürünü Düzenle',addCategory:'Kategori Ekle',editCategory:'Kategoriyi Düzenle',addDealer:'Bayi Ekle',editDealer:'Bayiyi Düzenle',
+code:'Kod',name:'Ad',description:'Açıklama',category:'Kategori',imageUrl:'Fotoğraf URL',price:'Perakende fiyat',dealerPrice:'Bayi fiyatı',stock:'Stok',active:'Aktif',isNew:'Yeni',save:'Kaydet',cancel:'İptal',edit:'Düzenle',delete:'Sil',
+emoji:'Emoji',companyType:'Şirket türü',taxId:'Vergi/kimlik no',address:'Adres',phone:'Telefon',email:'Email',dealerUsername:'Kullanıcı adı',dealerPassword:'Şifre',allowedCategories:'İzin verilen kategoriler',
+invoice:'Fatura',status:'Durum',total:'Toplam',date:'Tarih',actions:'İşlem',setStatus:'Durumu değiştir',confirmDelete:'Silmek istediğinize emin misiniz?',saved:'Kaydedildi',deleted:'Silindi',languageChanged:'Dil değiştirildi',
+noData:'Henüz veri yok',photoUploadNote:'Bilgisayardan dosya yükleme Firebase Storage açıldıktan sonra etkinleşecek. Şimdilik fotoğraf URL çalışır.',ordersCount:'Sipariş',totalSpent:'Toplam alışveriş'
+}};
+const t=k=>T[lang][k]||k;
+function ah(){return {authorization:'Bearer '+token,'content-type':'application/json'}}
+async function api(path,opt={}){const r=await fetch(apiBase+'/'+path,opt);const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||('HTTP_'+r.status));return d}
+function say(x){const el=document.getElementById('toast');el.textContent=x;el.style.display='block';clearTimeout(window.__tt);window.__tt=setTimeout(()=>el.style.display='none',2200)}
+function esc(v){return String(v??'').replace(/[&<>"']/g,s=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]))}
+function money(v){return Number(v||0).toFixed(2)+' ₾'}
+function fmtDate(v){try{if(!v)return'';if(v._seconds)return new Date(v._seconds*1000).toLocaleString();return new Date(v).toLocaleString()}catch{return''}}
+function setLang(v){lang=v;localStorage.setItem('mmAdminLang',v);applyLang();say(t('languageChanged'));if(token)renderCurrent()}
+function applyLang(){
+ document.documentElement.lang=lang;document.getElementById('brandAdmin').textContent=t('admin');
+ document.getElementById('loginTitle').textContent=t('login');u.placeholder=t('username');p.placeholder=t('password');loginBtn.textContent=t('signin');
+ document.getElementById('lang-ka').classList.toggle('active',lang==='ka');document.getElementById('lang-tr').classList.toggle('active',lang==='tr');renderTabs();
+}
+const tabs=[
+ ['dashboard','dashboard'],['products','products'],['categories','categories'],['orders','orders'],['dealerOrders','dealerOrders'],['dealers','dealers'],['customers','customers'],['integrations','integrations']
+];
+let current='dashboard';
+function renderTabs(){if(!token)return;tabsEl=document.getElementById('tabs');tabsEl.innerHTML=tabs.map(([id,key])=>`<button class="btn ${current===id?'active':''}" onclick="openTab('${id}')">${t(key)}</button>`).join('')+`<button class="btn" onclick="logout()">${t('logout')}</button>`}
+function renderCurrent(){openTab(current,true)}
+async function doLogin(){try{const d=await api('admin/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:u.value.trim(),password:p.value})});token=d.token;sessionStorage.setItem('adminToken',token);showApp();await openTab('dashboard')}catch(e){say(e.message)}}
+function showApp(){document.getElementById('loginBox').classList.add('hidden');document.getElementById('app').classList.remove('hidden');renderTabs()}
+function logout(){sessionStorage.removeItem('adminToken');token='';location.reload()}
+async function openTab(id,rerender=false){current=id;renderTabs();try{
+ if(id==='dashboard')await dashboard();
+ if(id==='products')await products();
+ if(id==='categories')await categories();
+ if(id==='orders')await orders(false);
+ if(id==='dealerOrders')await orders(true);
+ if(id==='dealers')await dealers();
+ if(id==='customers')await customers();
+ if(id==='integrations')await integrations();
+}catch(e){if(e.message==='AUTH_REQUIRED'){logout();return}say(e.message)}}
+
+async function dashboard(){const d=await api('admin/dashboard',{headers:ah()});const labels={products:t('products'),categories:t('categories'),customers:t('customers'),dealers:t('dealers'),orders:t('orders'),dealerOrders:t('dealerOrders'),sales:t('totalSpent')};panel.innerHTML='<div class="grid">'+Object.entries(d.stats).map(([k,v])=>`<div class="card stat"><div class="muted">${esc(labels[k]||k)}</div><h2>${k==='sales'?money(v):esc(v)}</h2></div>`).join('')+'</div>'}
+
+async function products(){
+ const [pd,cd]=await Promise.all([api('admin/products',{headers:ah()}),api('admin/categories',{headers:ah()})]);cache.products=pd.products;cache.categories=cd.categories;
+ panel.innerHTML=`<div class="card"><div class="toolbar"><h2 class="sectiontitle">${t('products')}</h2><button class="btn red" onclick="productForm()">+ ${t('addProduct')}</button></div><div class="tablewrap"><table class="table"><thead><tr><th></th><th>${t('code')}</th><th>${t('name')}</th><th>${t('category')}</th><th>${t('price')}</th><th>${t('dealerPrice')}</th><th>${t('stock')}</th><th>${t('status')}</th><th>${t('actions')}</th></tr></thead><tbody>${cache.products.length?cache.products.map(x=>`<tr><td>${x.image?`<img class="thumb" src="${esc(x.image)}">`:''}</td><td>${esc(x.code)}</td><td>${esc(x.name)}</td><td>${esc((cache.categories.find(c=>c.id===x.categoryId)||{}).name||'')}</td><td>${money(x.price)}</td><td>${money(x.dealerPrice)}</td><td>${esc(x.stock)}</td><td><span class="badge">${x.active?t('active'):'OFF'}</span></td><td><div class="actions"><button class="btn small" onclick="productForm('${x.id}')">${t('edit')}</button><button class="btn danger small" onclick="deleteProduct('${x.id}')">${t('delete')}</button></div></td></tr>`).join(''):`<tr><td colspan="9" class="empty">${t('noData')}</td></tr>`}</tbody></table></div></div>`;
+}
+function productForm(id=''){const x=cache.products.find(v=>v.id===id)||{};openModal(id?t('editProduct'):t('addProduct'),`
+<form class="form" onsubmit="saveProduct(event,'${id}')">
+<div class="row"><input id="pf_code" placeholder="${t('code')}" value="${esc(x.code||'')}" required><input id="pf_name" placeholder="${t('name')}" value="${esc(x.name||'')}" required></div>
+<textarea id="pf_desc" placeholder="${t('description')}">${esc(x.description||'')}</textarea>
+<select id="pf_cat"><option value="">${t('category')}</option>${cache.categories.map(c=>`<option value="${c.id}" ${x.categoryId===c.id?'selected':''}>${esc(c.emoji||'')} ${esc(c.name)}</option>`).join('')}</select>
+<input id="pf_img" placeholder="${t('imageUrl')}" value="${esc(x.image||'')}">
+<div class="muted">${t('photoUploadNote')}</div>
+<div class="row3"><input id="pf_price" type="number" step="0.01" min="0" placeholder="${t('price')}" value="${x.price??''}" required><input id="pf_dprice" type="number" step="0.01" min="0" placeholder="${t('dealerPrice')}" value="${x.dealerPrice??''}" required><input id="pf_stock" type="number" min="0" placeholder="${t('stock')}" value="${x.stock??0}" required></div>
+<label class="switch"><input id="pf_active" type="checkbox" ${x.active!==false?'checked':''}> ${t('active')}</label>
+<label class="switch"><input id="pf_new" type="checkbox" ${x.isNew?'checked':''}> ${t('isNew')}</label>
+<button class="btn red" type="submit">${t('save')}</button>
+</form>`)}
+async function saveProduct(e,id){e.preventDefault();await api('admin/products',{method:'POST',headers:ah(),body:JSON.stringify({id,code:pf_code.value.trim(),name:pf_name.value.trim(),description:pf_desc.value,categoryId:pf_cat.value,image:pf_img.value.trim(),price:Number(pf_price.value),dealerPrice:Number(pf_dprice.value),stock:Number(pf_stock.value),active:pf_active.checked,isNew:pf_new.checked})});closeModal();say(t('saved'));products()}
+async function deleteProduct(id){if(!confirm(t('confirmDelete')))return;await api('admin/products/'+id,{method:'DELETE',headers:ah()});say(t('deleted'));products()}
+
+async function categories(){const d=await api('admin/categories',{headers:ah()});cache.categories=d.categories;panel.innerHTML=`<div class="card"><div class="toolbar"><h2 class="sectiontitle">${t('categories')}</h2><button class="btn red" onclick="categoryForm()">+ ${t('addCategory')}</button></div><div class="tablewrap"><table class="table"><tr><th>${t('emoji')}</th><th>${t('name')}</th><th>${t('imageUrl')}</th><th>${t('actions')}</th></tr>${cache.categories.length?cache.categories.map(x=>`<tr><td>${esc(x.emoji)}</td><td>${esc(x.name)}</td><td>${x.image?`<img class="thumb" src="${esc(x.image)}">`:''}</td><td><div class="actions"><button class="btn small" onclick="categoryForm('${x.id}')">${t('edit')}</button><button class="btn danger small" onclick="deleteCategory('${x.id}')">${t('delete')}</button></div></td></tr>`).join(''):`<tr><td colspan="4" class="empty">${t('noData')}</td></tr>`}</table></div></div>`}
+function categoryForm(id=''){const x=cache.categories.find(v=>v.id===id)||{};openModal(id?t('editCategory'):t('addCategory'),`<form class="form" onsubmit="saveCategory(event,'${id}')"><div class="row"><input id="cf_emoji" placeholder="${t('emoji')}" value="${esc(x.emoji||'')}"><input id="cf_name" placeholder="${t('name')}" value="${esc(x.name||'')}" required></div><input id="cf_img" placeholder="${t('imageUrl')}" value="${esc(x.image||'')}"><button class="btn red">${t('save')}</button></form>`)}
+async function saveCategory(e,id){e.preventDefault();await api('admin/categories',{method:'POST',headers:ah(),body:JSON.stringify({id,emoji:cf_emoji.value,name:cf_name.value.trim(),image:cf_img.value.trim()})});closeModal();say(t('saved'));categories()}
+async function deleteCategory(id){if(!confirm(t('confirmDelete')))return;try{await api('admin/categories/'+id,{method:'DELETE',headers:ah()});say(t('deleted'));categories()}catch(e){say(e.message==='CATEGORY_HAS_PRODUCTS'?'ჯერ ამ კატეგორიის პროდუქტები გადაიტანე/წაშალე':e.message)}}
+
+const statuses=['ახალი','დადასტურებული','მუშავდება','მზადაა','გაგზავნილია','ჩაბარებულია','გაუქმებული'];
+async function orders(dealer){const d=await api(dealer?'admin/dealer-orders':'admin/orders',{headers:ah()});if(dealer)cache.dealerOrders=d.orders;else cache.orders=d.orders;const arr=d.orders;panel.innerHTML=`<div class="card"><h2>${dealer?t('dealerOrders'):t('orders')}</h2><div class="tablewrap"><table class="table"><tr><th>${t('invoice')}</th><th>${t('date')}</th><th>${t('status')}</th><th>${t('total')}</th><th>${t('actions')}</th></tr>${arr.length?arr.map(x=>`<tr><td>${esc(x.invoice)}</td><td>${esc(fmtDate(x.createdAt))}</td><td>${esc(x.status)}</td><td>${money(x.total)}</td><td><select onchange="changeStatus('${x.id}',this.value,${dealer})">${statuses.map(s=>`<option ${x.status===s?'selected':''}>${s}</option>`).join('')}</select></td></tr>`).join(''):`<tr><td colspan="5" class="empty">${t('noData')}</td></tr>`}</table></div></div>`}
+async function changeStatus(id,status,dealer){await api('admin/order-status',{method:'POST',headers:ah(),body:JSON.stringify({id,status,dealer})});say(t('saved'))}
+
+async function dealers(){const [dd,cd]=await Promise.all([api('admin/dealers',{headers:ah()}),api('admin/categories',{headers:ah()})]);cache.dealers=dd.dealers;cache.categories=cd.categories;panel.innerHTML=`<div class="card"><div class="toolbar"><h2 class="sectiontitle">${t('dealers')}</h2><button class="btn red" onclick="dealerForm()">+ ${t('addDealer')}</button></div><div class="tablewrap"><table class="table"><tr><th>${t('companyType')}</th><th>${t('name')}</th><th>${t('taxId')}</th><th>${t('phone')}</th><th>${t('status')}</th><th>${t('actions')}</th></tr>${cache.dealers.length?cache.dealers.map(x=>`<tr><td>${esc(x.companyType)}</td><td>${esc(x.name)}</td><td>${esc(x.taxId)}</td><td>${esc(x.phone)}</td><td><span class="badge">${x.active?t('active'):'OFF'}</span></td><td><div class="actions"><button class="btn small" onclick="dealerForm('${x.id}')">${t('edit')}</button><button class="btn danger small" onclick="deleteDealer('${x.id}')">${t('delete')}</button></div></td></tr>`).join(''):`<tr><td colspan="6" class="empty">${t('noData')}</td></tr>`}</table></div></div>`}
+function dealerForm(id=''){const x=cache.dealers.find(v=>v.id===id)||{};openModal(id?t('editDealer'):t('addDealer'),`<form class="form" onsubmit="saveDealer(event,'${id}')">
+<div class="row"><select id="df_type"><option ${x.companyType==='ფპ'?'selected':''}>ფპ</option><option ${(!x.companyType||x.companyType==='შპს')?'selected':''}>შპს</option><option ${x.companyType==='იმ'?'selected':''}>იმ</option></select><input id="df_name" placeholder="${t('name')}" value="${esc(x.name||'')}" required></div>
+<div class="row"><input id="df_tax" placeholder="${t('taxId')}" value="${esc(x.taxId||'')}" required><input id="df_phone" placeholder="${t('phone')}" value="${esc(x.phone||'')}" required></div>
+<input id="df_address" placeholder="${t('address')}" value="${esc(x.address||'')}"><input id="df_email" type="email" placeholder="${t('email')}" value="${esc(x.email||'')}">
+<div class="row"><input id="df_user" placeholder="${t('dealerUsername')}" value="${esc(x.username||'')}" required><input id="df_pass" type="password" placeholder="${t('dealerPassword')} ${id?'('+t('edit')+')':''}"></div>
+<div><b>${t('allowedCategories')}</b><div class="grid" style="margin-top:8px">${cache.categories.map(c=>`<label class="switch"><input type="checkbox" name="dfcat" value="${c.id}" ${(x.categories||[]).includes(c.id)?'checked':''}> ${esc(c.emoji||'')} ${esc(c.name)}</label>`).join('')}</div></div>
+<label class="switch"><input id="df_active" type="checkbox" ${x.active!==false?'checked':''}> ${t('active')}</label>
+<button class="btn red">${t('save')}</button></form>`)}
+async function saveDealer(e,id){e.preventDefault();const cats=[...document.querySelectorAll('input[name=dfcat]:checked')].map(x=>x.value);await api('admin/dealers',{method:'POST',headers:ah(),body:JSON.stringify({id,companyType:df_type.value,name:df_name.value.trim(),taxId:df_tax.value.trim(),address:df_address.value.trim(),phone:df_phone.value.trim(),email:df_email.value.trim(),username:df_user.value.trim(),password:df_pass.value,categories:cats,active:df_active.checked})});closeModal();say(t('saved'));dealers()}
+async function deleteDealer(id){if(!confirm(t('confirmDelete')))return;await api('admin/dealers/'+id,{method:'DELETE',headers:ah()});say(t('deleted'));dealers()}
+
+async function customers(){const d=await api('admin/customers',{headers:ah()});cache.customers=d.customers;panel.innerHTML=`<div class="card"><h2>${t('customers')}</h2><div class="tablewrap"><table class="table"><tr><th>${t('name')}</th><th>${t('phone')}</th><th>${t('email')}</th><th>${t('address')}</th><th>${t('ordersCount')}</th><th>${t('totalSpent')}</th></tr>${d.customers.length?d.customers.map(x=>`<tr><td>${esc((x.firstName||'')+' '+(x.lastName||''))}</td><td>${esc(x.phone)}</td><td>${esc(x.email)}</td><td>${esc(x.address)}</td><td>${esc(x.ordersCount)}</td><td>${money(x.totalSpent)}</td></tr>`).join(''):`<tr><td colspan="6" class="empty">${t('noData')}</td></tr>`}</table></div></div>`}
+
+async function integrations(){const d=await api('admin/integrations',{headers:ah()});panel.innerHTML=`<div class="grid">${Object.entries(d.integrations).map(([k,v])=>`<div class="card"><h3>${k.toUpperCase()}</h3><div class="badge">${v.configured?'CONFIGURED':'NOT CONFIGURED'}</div>${Object.entries(v).filter(([a])=>a!=='configured').map(([a,b])=>`<p><b>${esc(a)}:</b> ${esc(b||'')}</p>`).join('')}</div>`).join('')}</div>`}
+
+function openModal(title,body){modalTitle.textContent=title;modalBody.innerHTML=body;modalBack.style.display='flex'}
+function closeModal(){modalBack.style.display='none';modalBody.innerHTML=''}
+
+applyLang();
+if(token){showApp();openTab('dashboard').catch(()=>logout())}
+</script>
+</body>
+</html>
