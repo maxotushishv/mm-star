@@ -125,6 +125,32 @@ async function handler(event){
     if(path==='dealer/catalog'&&method==='GET'){const a=await roleAuth(event,['dealer']);const ds=await db.collection('dealers').doc(a.sub).get(), d=ds.data();const q=await db.collection('products').where('active','==',true).get();const products=q.docs.map(productPublic).filter(p=>(d.categories||[]).length===0||(d.categories||[]).includes(p.categoryId));return ok({products:products.map(p=>({...p,price:p.dealerPrice,retailPrice:p.price,dealerPrice:p.dealerPrice,difference:Number(p.price)-Number(p.dealerPrice)})),dealer:{name:d.name}});}
     if(path==='dealer/orders'&&method==='GET'){const a=await roleAuth(event,['dealer']);const q=await db.collection('dealerOrders').where('dealerId','==',a.sub).orderBy('createdAt','desc').get();return ok({orders:q.docs.map(productPublic)});}
     if(path==='dealer/orders'&&method==='POST'){const a=await roleAuth(event,['dealer']),b=bodyOf(event),dealer=(await db.collection('dealers').doc(a.sub).get()).data();if(!b.items?.length)return bad('EMPTY_CART');let total=0;const items=[];for(const it of b.items){const s=await db.collection('products').doc(it.id).get(),p=s.data();if(!p||!p.active) return bad('PRODUCT_NOT_AVAILABLE');if((dealer.categories||[]).length&&!(dealer.categories||[]).includes(p.categoryId)) return bad('CATEGORY_NOT_ALLOWED');const qty=Math.max(1,Number(it.qty)||1);if(Number(p.stock)<qty)return bad('OUT_OF_STOCK');const price=Number(p.dealerPrice);total+=price*qty;items.push({productId:s.id,code:p.code||'',name:p.name,qty,price,total:price*qty});}const invoice=await nextInvoice('dealer'),ref=db.collection('dealerOrders').doc();await db.runTransaction(async tx=>{for(const i of items){const pr=db.collection('products').doc(i.productId),s=await tx.get(pr);if(Number(s.data().stock)<i.qty)throw new Error('OUT_OF_STOCK');tx.update(pr,{stock:admin.firestore.FieldValue.increment(-i.qty),sales:admin.firestore.FieldValue.increment(i.qty)});}tx.set(ref,{invoice,dealerId:a.sub,dealer:{name:dealer.name,companyType:dealer.companyType,taxId:dealer.taxId,address:dealer.address,phone:dealer.phone},items,total,paymentMethod:b.paymentMethod||'invoice',status:'ახალი',createdAt:admin.firestore.FieldValue.serverTimestamp()});});return ok({id:ref.id,invoice,total});}
+
+    if(path.startsWith('admin/categories/')&&method==='DELETE'){
+      await roleAuth(event,['admin']);
+      const categoryId=path.split('/')[2];
+      const used=await db.collection('products').where('categoryId','==',categoryId).limit(1).get();
+      if(!used.empty) return bad('CATEGORY_HAS_PRODUCTS',409);
+      await db.collection('categories').doc(categoryId).delete();
+      return ok();
+    }
+    if(path.startsWith('admin/dealers/')&&method==='DELETE'){
+      await roleAuth(event,['admin']);
+      const dealerId=path.split('/')[2];
+      await db.collection('dealers').doc(dealerId).delete();
+      return ok();
+    }
+    if(path==='admin/customers'&&method==='GET'){
+      await roleAuth(event,['admin']);
+      const q=await db.collection('customers').get();
+      const rows=[];
+      for(const d of q.docs){
+        const oq=await db.collection('orders').where('customerId','==',d.id).get();
+        const total=oq.docs.reduce((a,s)=>a+Number(s.data().total||0),0);
+        rows.push({id:d.id,...d.data(),ordersCount:oq.size,totalSpent:total});
+      }
+      return ok({customers:rows});
+    }
     if(path==='admin/integrations'&&method==='GET'){await roleAuth(event,['admin']);return ok({integrations:{ubill:{configured:!!env.UBILL_API_KEY,brandId:env.UBILL_BRAND_ID||'1'},keepz:{configured:!!(env.KEEPZ_INTEGRATOR_ID&&env.KEEPZ_RECEIVER_ID&&env.KEEPZ_PUBLIC_KEY&&env.KEEPZ_PRIVATE_KEY),receiverId:env.KEEPZ_RECEIVER_ID||''},onway:{configured:!!(env.ONWAY_API_KEY&&env.ONWAY_SECRET),apiUrl:env.ONWAY_API_URL||''}}});}
     return bad('NOT_FOUND',404);
   } catch(e){console.error(e); const m=e?.message||'SERVER_ERROR'; if(m==='AUTH_REQUIRED')return bad(m,401); if(m==='FORBIDDEN')return bad(m,403); return bad(m,500);}
