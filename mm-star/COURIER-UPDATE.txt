@@ -1,0 +1,8 @@
+MM STAR courier schedule update
+
+Imported 1368 courier locations from schedule.xlsx.
+- City / municipality entries: 111
+- Regional / child settlement entries: 1257
+
+Checkout now shows courier service weekdays and the next estimated service date.
+This is an estimate, not a guaranteed delivery date.
