@@ -1,0 +1,2 @@
+Fixes: `location is not defined` in backend paymentLabel().
+Replace netlify/functions/api.mjs (or all files) in GitHub and redeploy Netlify.
