@@ -1,0 +1,8 @@
+Netlify Node.js v20 fix for npm ETARGET @netlify/otel@^7.0.5
+
+1. Deploy this folder as your GitHub project contents (not ZIP drag-and-drop of static assets).
+2. In Netlify Environment Variables, set NODE_VERSION=20 (Builds scope).
+3. Set Netlify Base directory to mm-star if repository contains a nested mm-star folder.
+4. Clear cache and deploy site.
+5. If @netlify/otel@^7.0.5 still fails, it is not in package.json: likely Netlify build infrastructure/plugins; collect log and open Netlify support.
+6. Previous AWS Lambda 4KB error can recur once npm succeeds. Do not remove credentials blindly.
