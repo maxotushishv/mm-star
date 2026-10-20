@@ -9,6 +9,6 @@
     "firebase-admin": "^13.4.0",
     "jose": "^6.0.12",
     "pdfkit": "^0.17.2",
-    "@netlify/blobs": "^11.0.1"
+    "@netlify/blobs": "10.7.13"
   }
 }
