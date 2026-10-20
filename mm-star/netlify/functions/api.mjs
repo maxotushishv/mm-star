@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import PDFDocument from 'pdfkit';
 import { SignJWT, jwtVerify } from 'jose';
 import { getStore } from '@netlify/blobs';
+import { finaConfig, createFinaClient, fetchFinaSnapshot, synchronizeFina } from './fina-core.mjs';
 
 const env = process.env;
 if (!admin.apps.length) {
@@ -197,14 +198,14 @@ async function productItems(requestItems,priceField='price'){
   }
   return {refs,snaps,items,subtotal,weightKg};
 }
-async function decrementStock(tx,refs,items){
+async function decrementStock(tx,refs,items,{reserveFina=false}={}){
   const fresh=[];for(const r of refs)fresh.push(await tx.get(r));
   for(let n=0;n<fresh.length;n++) if(Number(fresh[n].data()?.stock||0)<items[n].qty) throw new Error('OUT_OF_STOCK');
-  for(let n=0;n<refs.length;n++) tx.update(refs[n],{stock:admin.firestore.FieldValue.increment(-items[n].qty),sales:admin.firestore.FieldValue.increment(items[n].qty)});
+  for(let n=0;n<refs.length;n++) tx.update(refs[n],{stock:admin.firestore.FieldValue.increment(-items[n].qty),sales:admin.firestore.FieldValue.increment(items[n].qty),...(reserveFina?{finaPendingQty:admin.firestore.FieldValue.increment(items[n].qty)}:{})});
 }
-async function restoreStock(items){
+async function restoreStock(items,{releasePending=false}={}){
   const batch=db.batch();
-  for(const i of items||[]){ const r=db.collection('products').doc(i.productId); batch.set(r,{stock:admin.firestore.FieldValue.increment(Number(i.qty)||0),sales:admin.firestore.FieldValue.increment(-(Number(i.qty)||0))},{merge:true}); }
+  for(const i of items||[]){ const r=db.collection('products').doc(i.productId); batch.set(r,{stock:admin.firestore.FieldValue.increment(Number(i.qty)||0),sales:admin.firestore.FieldValue.increment(-(Number(i.qty)||0)),...(releasePending?{finaPendingQty:admin.firestore.FieldValue.increment(-(Number(i.qty)||0))}:{})},{merge:true}); }
   await batch.commit();
 }
 
@@ -381,17 +382,17 @@ async function handler(event){
     if(path==='orders'&&method==='POST'){
       const u=await firebaseAuth(event),b=bodyOf(event),profileSnap=await db.collection('customers').doc(u.uid).get(),profile=profileSnap.data()||{},pi=await productItems(b.items,'price');
       const lang=language(b.language||profile.preferredLanguage),fee=deliveryFee(pi.weightKg,b.deliveryMethod,b.deliveryZone),total=pi.subtotal+fee,paymentMethod=b.paymentMethod||'invoice';
-      const baseOrder={customerId:u.uid,customer:{firstName:profile.firstName||'',lastName:profile.lastName||'',phone:u.phone_number||profile.phone||'',email:profile.email||'',address:b.address||profile.address||''},items:pi.items,subtotal:pi.subtotal,weightKg:pi.weightKg,deliveryFee:fee,total,paymentMethod,deliveryMethod:b.deliveryMethod||'pickup',deliveryZone:b.deliveryZone||'',district:b.district||'',address:b.address||profile.address||'',courierType:b.courierType||'',courierLocation:b.courierLocation||'',courierDays:b.courierDays||'',estimatedDeliveryDate:b.estimatedDeliveryDate||'',language:lang,statusCode:'NEW',status:STATUS_KA.NEW};
+      const baseOrder={customerId:u.uid,customer:{firstName:profile.firstName||'',lastName:profile.lastName||'',phone:u.phone_number||profile.phone||'',email:profile.email||'',address:b.address||profile.address||''},items:pi.items,subtotal:pi.subtotal,weightKg:pi.weightKg,deliveryFee:fee,total,paymentMethod,deliveryMethod:b.deliveryMethod||'pickup',deliveryZone:b.deliveryZone||'',district:b.district||'',address:b.address||profile.address||'',courierType:b.courierType||'',courierLocation:b.courierLocation||'',courierDays:b.courierDays||'',estimatedDeliveryDate:b.estimatedDeliveryDate||'',language:lang,statusCode:'NEW',status:STATUS_KA.NEW,finaReserved:env.FINA_ENABLED==='true',finaPosted:false};
       // Card/Installment: reserve stock and create only a payment intent. The real order is created only after Keepz confirms payment server-side.
       if(paymentMethod==='keepz'){
         const intentId=id(),intentRef=db.collection('paymentIntents').doc(intentId),intent={...baseOrder,paymentStatus:'PENDING',keepzOrderId:intentId,reserved:true,createdAt:admin.firestore.FieldValue.serverTimestamp(),expiresAt:Date.now()+30*60*1000};
-        await db.runTransaction(async tx=>{await decrementStock(tx,pi.refs,pi.items);tx.set(intentRef,intent)});
+        await db.runTransaction(async tx=>{await decrementStock(tx,pi.refs,pi.items,{reserveFina:intent.finaReserved});tx.set(intentRef,intent)});
         try{const payment=await keepzCreate({...intent,keepzOrderId:intentId});await intentRef.update({keepz:payment,updatedAt:admin.firestore.FieldValue.serverTimestamp()});return ok({pendingPayment:true,paymentIntentId:intentId,total,deliveryFee:fee,payment});}
-        catch(e){await restoreStock(intent.items);await intentRef.delete();throw e;}
+        catch(e){await restoreStock(intent.items,{releasePending:intent.finaReserved});await intentRef.delete();throw e;}
       }
       const invoice=await nextInvoice('customer'),orderId=id(),ref=db.collection('orders').doc(orderId),paymentStatus=paymentMethod==='invoice'?'AWAITING_CONFIRMATION':'UNPAID';
       const order={...baseOrder,invoice,paymentStatus,createdAt:admin.firestore.FieldValue.serverTimestamp()};
-      await db.runTransaction(async tx=>{await decrementStock(tx,pi.refs,pi.items);tx.set(ref,order)});
+      await db.runTransaction(async tx=>{await decrementStock(tx,pi.refs,pi.items,{reserveFina:order.finaReserved});tx.set(ref,order)});
       await safeSms(order.customer.phone,orderCreatedSms(order));return ok({orderId,invoice,total,deliveryFee:fee,payment:null,paymentStatus,bank:await storeSettings()});
     }
     if(path==='keepz-callback'&&method==='POST'){
@@ -401,11 +402,11 @@ async function handler(event){
       const intentRef=db.collection('paymentIntents').doc(oid),s=await intentRef.get();if(!s.exists)return json(200,{received:true,missingIntent:true});
       const intent=s.data(),success=['SUCCESS','PAID','COMPLETED'].includes(String(payload.status||'').toUpperCase());
       if(success){
-        if(intent.reservationReleased){const refs=(intent.items||[]).map(i=>db.collection('products').doc(i.productId));await db.runTransaction(async tx=>{await decrementStock(tx,refs,intent.items||[])});}
+        if(intent.reservationReleased){const refs=(intent.items||[]).map(i=>db.collection('products').doc(i.productId));await db.runTransaction(async tx=>{await decrementStock(tx,refs,intent.items||[],{reserveFina:intent.finaReserved})});}
         const invoice=await nextInvoice('customer'),order={...intent,invoice,paymentStatus:'PAID',statusCode:'PAID',status:STATUS_KA.PAID,paymentCallback:payload,paymentIntentId:oid,paidAt:admin.firestore.FieldValue.serverTimestamp(),createdAt:admin.firestore.FieldValue.serverTimestamp()};
         delete order.expiresAt;delete order.reserved;
         await db.collection('orders').doc(oid).set(order);await intentRef.delete();await safeSms(order.customer?.phone,orderCreatedSms(order));
-      }else if(!intent.reservationReleased){await restoreStock(intent.items);await intentRef.set({paymentStatus:'FAILED',reservationReleased:true,paymentCallback:payload,updatedAt:admin.firestore.FieldValue.serverTimestamp()},{merge:true});}
+      }else if(!intent.reservationReleased){await restoreStock(intent.items,{releasePending:intent.finaReserved});await intentRef.set({paymentStatus:'FAILED',reservationReleased:true,paymentCallback:payload,updatedAt:admin.firestore.FieldValue.serverTimestamp()},{merge:true});}
       return json(200,{received:true});
     }
     if(path.startsWith('payment/status/')&&method==='GET'){
@@ -479,9 +480,9 @@ async function handler(event){
         if(code!==statusCodeOf(old))await safeSms(old.customer?.phone,statusSms(old,code));
         return ok({id:b.id})
       }
-      const customer=await db.collection('customers').doc(b.customerId).get();if(!customer.exists)return bad('CUSTOMER_NOT_FOUND');const c=customer.data(),pi=await productItems(b.items,'price'),lang=language(b.language||c.preferredLanguage),fee=deliveryFee(pi.weightKg,b.deliveryMethod,b.deliveryZone),invoice=await nextInvoice('customer'),ref=db.collection('orders').doc();const order={invoice,customerId:customer.id,customer:{firstName:c.firstName||'',lastName:c.lastName||'',phone:c.phone||'',email:c.email||'',address:b.address||c.address||''},items:pi.items,subtotal:pi.subtotal,weightKg:pi.weightKg,deliveryFee:fee,total:pi.subtotal+fee,paymentMethod:b.paymentMethod||'invoice',paymentStatus:b.paymentStatus||'UNPAID',deliveryMethod:b.deliveryMethod||'pickup',deliveryZone:b.deliveryZone||'',district:b.district||'',address:b.address||c.address||'',courierType:b.courierType||'',courierLocation:b.courierLocation||'',courierDays:b.courierDays||'',estimatedDeliveryDate:b.estimatedDeliveryDate||'',language:lang,statusCode:b.statusCode||'NEW',status:STATUS_KA[b.statusCode||'NEW'],createdAt:admin.firestore.FieldValue.serverTimestamp()};await db.runTransaction(async tx=>{await decrementStock(tx,pi.refs,pi.items);tx.set(ref,order)});await safeSms(order.customer.phone,orderCreatedSms(order));return ok({id:ref.id,invoice})
+      const customer=await db.collection('customers').doc(b.customerId).get();if(!customer.exists)return bad('CUSTOMER_NOT_FOUND');const c=customer.data(),pi=await productItems(b.items,'price'),lang=language(b.language||c.preferredLanguage),fee=deliveryFee(pi.weightKg,b.deliveryMethod,b.deliveryZone),invoice=await nextInvoice('customer'),ref=db.collection('orders').doc();const order={invoice,customerId:customer.id,customer:{firstName:c.firstName||'',lastName:c.lastName||'',phone:c.phone||'',email:c.email||'',address:b.address||c.address||''},items:pi.items,subtotal:pi.subtotal,weightKg:pi.weightKg,deliveryFee:fee,total:pi.subtotal+fee,paymentMethod:b.paymentMethod||'invoice',paymentStatus:b.paymentStatus||'UNPAID',deliveryMethod:b.deliveryMethod||'pickup',deliveryZone:b.deliveryZone||'',district:b.district||'',address:b.address||c.address||'',courierType:b.courierType||'',courierLocation:b.courierLocation||'',courierDays:b.courierDays||'',estimatedDeliveryDate:b.estimatedDeliveryDate||'',language:lang,statusCode:b.statusCode||'NEW',status:STATUS_KA[b.statusCode||'NEW'],finaReserved:env.FINA_ENABLED==='true',finaPosted:false,createdAt:admin.firestore.FieldValue.serverTimestamp()};await db.runTransaction(async tx=>{await decrementStock(tx,pi.refs,pi.items,{reserveFina:order.finaReserved});tx.set(ref,order)});await safeSms(order.customer.phone,orderCreatedSms(order));return ok({id:ref.id,invoice})
     }
-    if(path.startsWith('admin/orders/')&&method==='DELETE'){await roleAuth(event,['admin']);const oid=path.split('/')[2],ref=db.collection('orders').doc(oid),s=await ref.get();if(!s.exists)return bad('NOT_FOUND',404);await restoreStock(s.data().items);await ref.delete();return ok()}
+    if(path.startsWith('admin/orders/')&&method==='DELETE'){await roleAuth(event,['admin']);const oid=path.split('/')[2],ref=db.collection('orders').doc(oid),s=await ref.get();if(!s.exists)return bad('NOT_FOUND',404);if(s.data().finaPosted)return bad('FINA_POSTED_ORDER_CANNOT_DELETE',409);await restoreStock(s.data().items,{releasePending:!!s.data().finaReserved});await ref.delete();return ok()}
     if(path==='admin/order-status'&&method==='POST'){await roleAuth(event,['admin','sales']);const b=bodyOf(event),coll=b.dealer?'dealerOrders':'orders',ref=db.collection(coll).doc(b.id),s=await ref.get();if(!s.exists)return bad('NOT_FOUND',404);const code=STATUS_CODES.includes(b.statusCode)?b.statusCode:(STATUS_FROM_OLD[b.status]||b.status||'NEW');await ref.update({statusCode:code,status:STATUS_KA[code]||code,...(code==='PAID'?{paymentStatus:'PAID'}:{}),updatedAt:admin.firestore.FieldValue.serverTimestamp()});const o=s.data(),phone=b.dealer?o.dealer?.phone:o.customer?.phone;if(code!==statusCodeOf(o))await safeSms(phone,statusSms(o,code));return ok()}
 
     if(path==='admin/dealers'&&method==='GET'){await roleAuth(event,['admin']);const q=await db.collection('dealers').get();return ok({dealers:q.docs.map(d=>({id:d.id,...d.data(),passwordHash:undefined}))})}
@@ -492,19 +493,67 @@ async function handler(event){
     if(path==='admin/dealer-orders'&&method==='POST'){
       await roleAuth(event,['admin']);const b=bodyOf(event);
       if(b.id){const ref=db.collection('dealerOrders').doc(b.id),s=await ref.get();if(!s.exists)return bad('NOT_FOUND',404);const code=STATUS_CODES.includes(b.statusCode)?b.statusCode:statusCodeOf(s.data());await ref.update({paymentMethod:b.paymentMethod||s.data().paymentMethod,statusCode:code,status:STATUS_KA[code],updatedAt:admin.firestore.FieldValue.serverTimestamp()});if(code!==statusCodeOf(s.data()))await safeSms(s.data().dealer?.phone,statusSms(s.data(),code));return ok({id:b.id})}
-      const ds=await db.collection('dealers').doc(b.dealerId).get();if(!ds.exists)return bad('DEALER_NOT_FOUND');const d=ds.data(),pi=await productItems(b.items,'dealerPrice'),invoice=await nextInvoice('dealer'),ref=db.collection('dealerOrders').doc(),lang=language(b.language||d.preferredLanguage);const order={invoice,dealerId:ds.id,dealer:{name:d.name||'',companyType:d.companyType||'',taxId:d.taxId||'',address:d.address||'',phone:d.phone||''},items:pi.items,subtotal:pi.subtotal,total:pi.subtotal,paymentMethod:b.paymentMethod||'invoice',language:lang,statusCode:b.statusCode||'NEW',status:STATUS_KA[b.statusCode||'NEW'],createdAt:admin.firestore.FieldValue.serverTimestamp()};await db.runTransaction(async tx=>{await decrementStock(tx,pi.refs,pi.items);tx.set(ref,order)});await safeSms(order.dealer.phone,orderCreatedSms(order));return ok({id:ref.id,invoice})
+      const ds=await db.collection('dealers').doc(b.dealerId).get();if(!ds.exists)return bad('DEALER_NOT_FOUND');const d=ds.data(),pi=await productItems(b.items,'dealerPrice'),invoice=await nextInvoice('dealer'),ref=db.collection('dealerOrders').doc(),lang=language(b.language||d.preferredLanguage);const order={invoice,dealerId:ds.id,dealer:{name:d.name||'',companyType:d.companyType||'',taxId:d.taxId||'',address:d.address||'',phone:d.phone||''},items:pi.items,subtotal:pi.subtotal,total:pi.subtotal,paymentMethod:b.paymentMethod||'invoice',language:lang,statusCode:b.statusCode||'NEW',status:STATUS_KA[b.statusCode||'NEW'],finaReserved:env.FINA_ENABLED==='true',finaPosted:false,createdAt:admin.firestore.FieldValue.serverTimestamp()};await db.runTransaction(async tx=>{await decrementStock(tx,pi.refs,pi.items,{reserveFina:order.finaReserved});tx.set(ref,order)});await safeSms(order.dealer.phone,orderCreatedSms(order));return ok({id:ref.id,invoice})
     }
-    if(path.startsWith('admin/dealer-orders/')&&method==='DELETE'){await roleAuth(event,['admin']);const oid=path.split('/')[2],ref=db.collection('dealerOrders').doc(oid),s=await ref.get();if(!s.exists)return bad('NOT_FOUND',404);await restoreStock(s.data().items);await ref.delete();return ok()}
+    if(path.startsWith('admin/dealer-orders/')&&method==='DELETE'){await roleAuth(event,['admin']);const oid=path.split('/')[2],ref=db.collection('dealerOrders').doc(oid),s=await ref.get();if(!s.exists)return bad('NOT_FOUND',404);if(s.data().finaPosted)return bad('FINA_POSTED_ORDER_CANNOT_DELETE',409);await restoreStock(s.data().items,{releasePending:!!s.data().finaReserved});await ref.delete();return ok()}
 
     if(path==='admin/settings'&&method==='GET'){await roleAuth(event,['admin']);return ok({settings:await storeSettings(),deliveryTariffs:DELIVERY_TARIFFS})}
     if(path==='admin/settings'&&method==='POST'){await roleAuth(event,['admin']);const b=bodyOf(event),allowed={address:b.address||'',storePhones:Array.isArray(b.storePhones)?b.storePhones:[],onlineSalesPhone:b.onlineSalesPhone||'',storeHours:b.storeHours||'',onlineSalesHours:b.onlineSalesHours||'',email:b.email||'',website:b.website||'',companyId:b.companyId||'',bank:b.bank||'',iban:b.iban||'',updatedAt:admin.firestore.FieldValue.serverTimestamp()};await db.collection('settings').doc('store').set(allowed,{merge:true});return ok({settings:{...DEFAULT_STORE,...allowed}})}
-    if(path==='admin/integrations'&&method==='GET'){await roleAuth(event,['admin']);return ok({integrations:{ubill:{configured:!!env.UBILL_API_KEY,brandId:env.UBILL_BRAND_ID||'1'},keepz:{configured:!!(env.KEEPZ_INTEGRATOR_ID&&env.KEEPZ_RECEIVER_ID&&env.KEEPZ_PUBLIC_KEY&&env.KEEPZ_PRIVATE_KEY),receiverId:env.KEEPZ_RECEIVER_ID||'',integratorId:env.KEEPZ_INTEGRATOR_ID||''}}})}
+    // FINA endpoints require the existing administrator JWT. Credentials stay server-side.
+    if(path==='admin/fina/mark-posted'&&method==='POST'){
+      await roleAuth(event,['admin']);const b=bodyOf(event);
+      if(typeof b.id!=='string'||!b.id||typeof b.dealer!=='boolean')return bad('ORDER_REQUIRED');
+      const coll=b.dealer?'dealerOrders':'orders',ref=db.collection(coll).doc(b.id);
+      await db.runTransaction(async tx=>{
+        const orderSnap=await tx.get(ref);if(!orderSnap.exists)throw new Error('ORDER_NOT_FOUND');
+        const order=orderSnap.data();if(!order.finaReserved)throw new Error('ORDER_NOT_RESERVED');
+        if(order.finaPosted)throw new Error('ALREADY_MARKED_POSTED');
+        const items=order.items||[],refs=[...new Set(items.map(i=>i.productId))].map(id=>db.collection('products').doc(id));
+        const snaps=await Promise.all(refs.map(r=>tx.get(r)));
+        for(let n=0;n<refs.length;n++){
+          const qty=items.filter(i=>i.productId===refs[n].id).reduce((v,i)=>v+Number(i.qty||0),0);
+          if(!snaps[n].exists||Number(snaps[n].data().finaPendingQty||0)<qty)throw new Error('FINA_RESERVATION_MISMATCH');
+          tx.update(refs[n],{finaPendingQty:admin.firestore.FieldValue.increment(-qty)});
+        }
+        tx.update(ref,{finaPosted:true,finaPostedAt:admin.firestore.FieldValue.serverTimestamp()});
+      });
+      return ok();
+    }
+    if(path==='admin/fina/catalog'&&method==='GET'){
+      await roleAuth(event,['admin']);
+      const cfg=finaConfig(),client=createFinaClient(cfg,{requireStore:false});
+      const [stores,prices]=await Promise.all([client.get('api/operation/getStores'),client.get('api/operation/getPriceTypes')]);
+      if(!Array.isArray(stores?.stores)||!Array.isArray(prices?.types))return bad('FINA_INVALID_CATALOG',502);
+      return ok({stores:stores.stores.map(x=>({id:x.id,name:x.name})),priceTypes:prices.types.map(x=>({id:x.id,name:x.name}))});
+    }
+    if(path==='admin/fina/status'&&method==='GET'){
+      await roleAuth(event,['admin']);const cfg=finaConfig();
+      const last=await db.collection('settings').doc('fina-last-sync').get();
+      return ok({fina:{enabled:cfg.enabled,configured:!!(cfg.base&&cfg.login&&cfg.password&&cfg.storeId),storeId:cfg.storeId,retailId:cfg.retailId,wholesaleId:cfg.wholesaleId,syncPrices:cfg.syncPrices,syncDescriptions:cfg.syncDescriptions,autoSync:env.FINA_AUTO_SYNC==='true',lastSync:last.exists?last.data():null}});
+    }
+    if(path==='admin/fina/lookup'&&method==='GET'){
+      await roleAuth(event,['admin']);const code=String(event.queryStringParameters?.code||'').trim();
+      if(!code||code.length>100)return bad('FINA_CODE_REQUIRED');
+      const cfg=finaConfig();const snapshot=await fetchFinaSnapshot(cfg);
+      if(snapshot.duplicates.has(code))return bad('FINA_DUPLICATE_CODE',409);
+      const product=snapshot.byCode.get(code);
+      if(!product)return bad('FINA_PRODUCT_NOT_FOUND',404);
+      return ok({product});
+    }
+    if(path==='admin/fina/sync'&&method==='POST'){
+      await roleAuth(event,['admin']);const b=bodyOf(event);
+      if(b.apply!==true&&b.apply!==false)return bad('FINA_APPLY_REQUIRED');
+      if(!['stock','all'].includes(b.fields))return bad('INVALID_SYNC_FIELDS');
+      const result=await synchronizeFina(db,admin,{dryRun:!b.apply,fields:b.fields});
+      return ok(result);
+    }
+    if(path==='admin/integrations'&&method==='GET'){await roleAuth(event,['admin']);return ok({integrations:{ubill:{configured:!!env.UBILL_API_KEY,brandId:env.UBILL_BRAND_ID||'1'},keepz:{configured:!!(env.KEEPZ_INTEGRATOR_ID&&env.KEEPZ_RECEIVER_ID&&env.KEEPZ_PUBLIC_KEY&&env.KEEPZ_PRIVATE_KEY),receiverId:env.KEEPZ_RECEIVER_ID||'',integratorId:env.KEEPZ_INTEGRATOR_ID||''},fina:{configured:!!(env.FINA_ENABLED==='true'&&env.FINA_API_URL&&env.FINA_LOGIN&&env.FINA_PASSWORD&&env.FINA_STORE_ID),enabled:env.FINA_ENABLED==='true'}}})}
 
     // Dealer portal
     if(path==='dealer/login'&&method==='POST'){const b=bodyOf(event),q=await db.collection('dealers').where('username','==',b.username).limit(1).get();if(q.empty)return bad('INVALID_CREDENTIALS',401);const d=q.docs[0];if(!d.data().active||d.data().passwordHash!==hash(b.password))return bad('INVALID_CREDENTIALS',401);return ok({token:await signRole({role:'dealer',sub:d.id},12),dealer:{id:d.id,name:d.data().name,preferredLanguage:d.data().preferredLanguage||'ka'}})}
     if(path==='dealer/catalog'&&method==='GET'){const a=await roleAuth(event,['dealer']),ds=await db.collection('dealers').doc(a.sub).get(),d=ds.data(),q=await db.collection('products').where('active','==',true).get(),cats=await db.collection('categories').get();const allowed=new Set(d.categories||[]),products=q.docs.map(publicDoc).filter(p=>allowed.has(p.categoryId)||allowed.has(p.subcategoryId)),allCats=cats.docs.map(publicDoc),allowedCats=allCats.filter(c=>allowed.has(c.id)||allowed.has(c.parentId));return ok({products:products.map(p=>({...p,retailPrice:p.price,price:p.dealerPrice,dealerPrice:p.dealerPrice,difference:Number(p.price)-Number(p.dealerPrice)})),categories:allowedCats,dealer:{name:d.name,preferredLanguage:d.preferredLanguage||'ka'}})}
     if(path==='dealer/orders'&&method==='GET'){const a=await roleAuth(event,['dealer']),q=await db.collection('dealerOrders').where('dealerId','==',a.sub).get();return ok({orders:q.docs.map(publicDoc).sort((x,y)=>(y.createdAt?._seconds||0)-(x.createdAt?._seconds||0))})}
-    if(path==='dealer/orders'&&method==='POST'){const a=await roleAuth(event,['dealer']),b=bodyOf(event),ds=await db.collection('dealers').doc(a.sub).get(),d=ds.data();const pi=await productItems(b.items,'dealerPrice');for(const i of pi.items){const p=(await db.collection('products').doc(i.productId).get()).data();if(!((d.categories||[]).includes(p.categoryId)||(d.categories||[]).includes(p.subcategoryId)))return bad('CATEGORY_NOT_ALLOWED')}const invoice=await nextInvoice('dealer'),ref=db.collection('dealerOrders').doc(),lang=language(b.language||d.preferredLanguage),order={invoice,dealerId:a.sub,dealer:{name:d.name,companyType:d.companyType,taxId:d.taxId,address:d.address,phone:d.phone},items:pi.items,subtotal:pi.subtotal,total:pi.subtotal,paymentMethod:b.paymentMethod||'invoice',language:lang,statusCode:'NEW',status:STATUS_KA.NEW,createdAt:admin.firestore.FieldValue.serverTimestamp()};await db.runTransaction(async tx=>{await decrementStock(tx,pi.refs,pi.items);tx.set(ref,order)});await db.collection('dealers').doc(a.sub).set({preferredLanguage:lang},{merge:true});await safeSms(order.dealer.phone,orderCreatedSms(order));return ok({id:ref.id,invoice,total:pi.subtotal})}
+    if(path==='dealer/orders'&&method==='POST'){const a=await roleAuth(event,['dealer']),b=bodyOf(event),ds=await db.collection('dealers').doc(a.sub).get(),d=ds.data();const pi=await productItems(b.items,'dealerPrice');for(const i of pi.items){const p=(await db.collection('products').doc(i.productId).get()).data();if(!((d.categories||[]).includes(p.categoryId)||(d.categories||[]).includes(p.subcategoryId)))return bad('CATEGORY_NOT_ALLOWED')}const invoice=await nextInvoice('dealer'),ref=db.collection('dealerOrders').doc(),lang=language(b.language||d.preferredLanguage),order={invoice,dealerId:a.sub,dealer:{name:d.name,companyType:d.companyType,taxId:d.taxId,address:d.address,phone:d.phone},items:pi.items,subtotal:pi.subtotal,total:pi.subtotal,paymentMethod:b.paymentMethod||'invoice',language:lang,statusCode:'NEW',status:STATUS_KA.NEW,finaReserved:env.FINA_ENABLED==='true',finaPosted:false,createdAt:admin.firestore.FieldValue.serverTimestamp()};await db.runTransaction(async tx=>{await decrementStock(tx,pi.refs,pi.items,{reserveFina:order.finaReserved});tx.set(ref,order)});await db.collection('dealers').doc(a.sub).set({preferredLanguage:lang},{merge:true});await safeSms(order.dealer.phone,orderCreatedSms(order));return ok({id:ref.id,invoice,total:pi.subtotal})}
 
     return bad('NOT_FOUND',404);
   }catch(e){console.error('API_ERROR',path,e);const m=e?.message||'SERVER_ERROR';if(m==='AUTH_REQUIRED')return bad(m,401);if(m==='FORBIDDEN')return bad(m,403);if(m.startsWith('OUT_OF_STOCK'))return bad(m,409);return bad(m,500)}

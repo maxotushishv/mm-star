@@ -63,3 +63,7 @@ Replace the existing repository files with this package, commit to `main`, and l
 - Bank details default to Bank of Georgia / GE78BG0000000954382600 / company 434157066 and can be changed from Admin Settings.
 - Checkout uses promotional effective prices.
 - PDF uses Georgian font only for Georgian text and Helvetica for Latin/numbers to avoid square glyphs.
+
+## FINA API 8.0 (read-only) — 2026-10-20
+
+The existing Netlify/Firebase site now includes FINA product lookup and stock sync. No website sale is written to FINA. Retail = `საცალო`; dealer = `მცირე საბითუმო`; FINA name fills both product name and description on lookup. Background stock sync can run every 10 minutes after opt-in. Read `FINA-SETUP-GE.md` before enabling, especially the legacy-order reservation warning.
